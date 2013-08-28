@@ -79,6 +79,7 @@
     self.hasBoundingBox    = NO;
     self.enabled           = YES;
     self.clusteringEnabled = YES;
+    self.minZoom = 1;
 
     self.isUserLocationAnnotation = NO;
 

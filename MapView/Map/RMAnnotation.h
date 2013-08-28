@@ -54,6 +54,8 @@
     CGPoint   anchorPoint;
 }
 
+@property (nonatomic, assign) int minZoom;
+
 /** @name Configuration Basic Annotation Properties */
 
 /** The annotation's location on the map. */

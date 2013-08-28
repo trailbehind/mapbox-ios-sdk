@@ -2661,161 +2661,169 @@
 
 - (void)correctPositionOfAllAnnotationsIncludingInvisibles:(BOOL)correctAllAnnotations animated:(BOOL)animated
 {
-    // Prevent blurry movements
-    [CATransaction begin];
-
-    // Synchronize marker movement with the map scroll view
-    if (animated && !_mapScrollView.isZooming)
+  //NSLog(@"correct position of all annotatoins");
+  // Prevent blurry movements
+  [CATransaction begin];
+  
+  // Synchronize marker movement with the map scroll view
+  if (animated && !_mapScrollView.isZooming)
+  {
+    [CATransaction setAnimationTimingFunction:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut]];
+    [CATransaction setAnimationDuration:0.30];
+  }
+  else
+  {
+    [CATransaction setDisableActions:YES];
+  }
+  
+  _accumulatedDelta.x = 0.0;
+  _accumulatedDelta.y = 0.0;
+  [_overlayView moveLayersBy:_accumulatedDelta];
+  
+  if (self.quadTree)
+  {
+    if (!correctAllAnnotations || _mapScrollViewIsZooming)
     {
-        [CATransaction setAnimationTimingFunction:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut]];
-        [CATransaction setAnimationDuration:0.30];
+      for (RMAnnotation *annotation in _visibleAnnotations)
+        [self correctScreenPosition:annotation animated:animated];
+      
+      //            RMLog(@"%d annotations corrected", [visibleAnnotations count]);
+      
+      [CATransaction commit];
+      
+      return;
     }
-    else
-    {
-        [CATransaction setDisableActions:YES];
+    
+    double boundingBoxBuffer = (kZoomRectPixelBuffer * _metersPerPixel);
+    
+    RMProjectedRect boundingBox = self.projectedBounds;
+    boundingBox.origin.x -= boundingBoxBuffer;
+    boundingBox.origin.y -= boundingBoxBuffer;
+    boundingBox.size.width += (2.0 * boundingBoxBuffer);
+    boundingBox.size.height += (2.0 * boundingBoxBuffer);
+    
+    NSArray * allAnnotationsOnScreen = [self.quadTree annotationsInProjectedRect:boundingBox
+                                                        createClusterAnnotations:self.clusteringEnabled
+                                                        withProjectedClusterSize:RMProjectedSizeMake(self.clusterAreaSize.width * _metersPerPixel, self.clusterAreaSize.height * _metersPerPixel)
+                                                   andProjectedClusterMarkerSize:RMProjectedSizeMake(self.clusterMarkerSize.width * _metersPerPixel, self.clusterMarkerSize.height * _metersPerPixel)
+                                                               findGravityCenter:self.positionClusterMarkersAtTheGravityCenter];
+    NSMutableArray * annotationsToCorrect = [NSMutableArray new];
+    for (RMAnnotation * annotation in allAnnotationsOnScreen) {
+      if (annotation.minZoom <= self.zoom) {
+        [annotationsToCorrect addObject:annotation];
+      }
     }
-
-    _accumulatedDelta.x = 0.0;
-    _accumulatedDelta.y = 0.0;
-    [_overlayView moveLayersBy:_accumulatedDelta];
-
-    if (self.quadTree)
+    
+    NSMutableSet *previousVisibleAnnotations = [[NSMutableSet alloc] initWithSet:_visibleAnnotations];
+    
+    for (RMAnnotation *annotation in annotationsToCorrect)
     {
-        if (!correctAllAnnotations || _mapScrollViewIsZooming)
+      if (annotation.layer == nil && _delegateHasLayerForAnnotation)
+        annotation.layer = [_delegate mapView:self layerForAnnotation:annotation];
+      
+      if (annotation.layer == nil)
+        continue;
+      
+      if ([annotation.layer isKindOfClass:[RMMarker class]] && ! annotation.isUserLocationAnnotation)
+        annotation.layer.transform = _annotationTransform;
+      
+      // Use the zPosition property to order the layer hierarchy
+      if ( ! [_visibleAnnotations containsObject:annotation])
+      {
+        [_overlayView addSublayer:annotation.layer];
+        [_visibleAnnotations addObject:annotation];
+      }
+      
+      [self correctScreenPosition:annotation animated:animated];
+      
+      [previousVisibleAnnotations removeObject:annotation];
+    }
+    
+    for (RMAnnotation *annotation in previousVisibleAnnotations)
+    {
+      if ( ! annotation.isUserLocationAnnotation)
+      {
+        if (_delegateHasWillHideLayerForAnnotation)
+          [_delegate mapView:self willHideLayerForAnnotation:annotation];
+        
+        annotation.layer = nil;
+        
+        if (_delegateHasDidHideLayerForAnnotation)
+          [_delegate mapView:self didHideLayerForAnnotation:annotation];
+        
+        [_visibleAnnotations removeObject:annotation];
+      }
+    }
+    
+    previousVisibleAnnotations = nil;
+    
+    //        RMLog(@"%d annotations on screen, %d total", [overlayView sublayersCount], [annotations count]);
+  }
+  else
+  {
+    CALayer *lastLayer = nil;
+    
+    @synchronized (_annotations)
+    {
+      if (correctAllAnnotations)
+      {
+        for (RMAnnotation *annotation in _annotations)
         {
-            for (RMAnnotation *annotation in _visibleAnnotations)
-                [self correctScreenPosition:annotation animated:animated];
-
-//            RMLog(@"%d annotations corrected", [visibleAnnotations count]);
-
-            [CATransaction commit];
-
-            return;
-        }
-
-        double boundingBoxBuffer = (kZoomRectPixelBuffer * _metersPerPixel);
-
-        RMProjectedRect boundingBox = self.projectedBounds;
-        boundingBox.origin.x -= boundingBoxBuffer;
-        boundingBox.origin.y -= boundingBoxBuffer;
-        boundingBox.size.width += (2.0 * boundingBoxBuffer);
-        boundingBox.size.height += (2.0 * boundingBoxBuffer);
-
-        NSArray *annotationsToCorrect = [self.quadTree annotationsInProjectedRect:boundingBox
-                                                         createClusterAnnotations:self.clusteringEnabled
-                                                         withProjectedClusterSize:RMProjectedSizeMake(self.clusterAreaSize.width * _metersPerPixel, self.clusterAreaSize.height * _metersPerPixel)
-                                                    andProjectedClusterMarkerSize:RMProjectedSizeMake(self.clusterMarkerSize.width * _metersPerPixel, self.clusterMarkerSize.height * _metersPerPixel)
-                                                                findGravityCenter:self.positionClusterMarkersAtTheGravityCenter];
-        NSMutableSet *previousVisibleAnnotations = [[NSMutableSet alloc] initWithSet:_visibleAnnotations];
-
-        for (RMAnnotation *annotation in annotationsToCorrect)
-        {
+          [self correctScreenPosition:annotation animated:animated];
+          
+          if ([annotation isAnnotationWithinBounds:[self bounds]])
+          {
             if (annotation.layer == nil && _delegateHasLayerForAnnotation)
-                annotation.layer = [_delegate mapView:self layerForAnnotation:annotation];
-
+              annotation.layer = [_delegate mapView:self layerForAnnotation:annotation];
+            
             if (annotation.layer == nil)
-                continue;
-
+              continue;
+            
             if ([annotation.layer isKindOfClass:[RMMarker class]] && ! annotation.isUserLocationAnnotation)
-                annotation.layer.transform = _annotationTransform;
-
-            // Use the zPosition property to order the layer hierarchy
-            if ( ! [_visibleAnnotations containsObject:annotation])
+              annotation.layer.transform = _annotationTransform;
+            
+            if (![_visibleAnnotations containsObject:annotation])
             {
-                [_overlayView addSublayer:annotation.layer];
-                [_visibleAnnotations addObject:annotation];
+              if (!lastLayer)
+                [_overlayView insertSublayer:annotation.layer atIndex:0];
+              else
+                [_overlayView insertSublayer:annotation.layer above:lastLayer];
+              
+              [_visibleAnnotations addObject:annotation];
             }
-
-            [self correctScreenPosition:annotation animated:animated];
-
-            [previousVisibleAnnotations removeObject:annotation];
-        }
-
-        for (RMAnnotation *annotation in previousVisibleAnnotations)
-        {
+            
+            lastLayer = annotation.layer;
+          }
+          else
+          {
             if ( ! annotation.isUserLocationAnnotation)
             {
-                if (_delegateHasWillHideLayerForAnnotation)
-                    [_delegate mapView:self willHideLayerForAnnotation:annotation];
-
-                annotation.layer = nil;
-
-                if (_delegateHasDidHideLayerForAnnotation)
-                    [_delegate mapView:self didHideLayerForAnnotation:annotation];
-
-                [_visibleAnnotations removeObject:annotation];
+              if (_delegateHasWillHideLayerForAnnotation)
+                [_delegate mapView:self willHideLayerForAnnotation:annotation];
+              
+              annotation.layer = nil;
+              [_visibleAnnotations removeObject:annotation];
+              
+              if (_delegateHasDidHideLayerForAnnotation)
+                [_delegate mapView:self didHideLayerForAnnotation:annotation];
             }
+          }
         }
-
-        previousVisibleAnnotations = nil;
-
-//        RMLog(@"%d annotations on screen, %d total", [overlayView sublayersCount], [annotations count]);
+        //                RMLog(@"%d annotations on screen, %d total", [overlayView sublayersCount], [annotations count]);
+      }
+      else
+      {
+        for (RMAnnotation *annotation in _visibleAnnotations)
+          [self correctScreenPosition:annotation animated:animated];
+        
+        //                RMLog(@"%d annotations corrected", [visibleAnnotations count]);
+      }
     }
-    else
-    {
-        CALayer *lastLayer = nil;
-
-        @synchronized (_annotations)
-        {
-            if (correctAllAnnotations)
-            {
-                for (RMAnnotation *annotation in _annotations)
-                {
-                    [self correctScreenPosition:annotation animated:animated];
-
-                    if ([annotation isAnnotationWithinBounds:[self bounds]])
-                    {
-                        if (annotation.layer == nil && _delegateHasLayerForAnnotation)
-                            annotation.layer = [_delegate mapView:self layerForAnnotation:annotation];
-
-                        if (annotation.layer == nil)
-                            continue;
-
-                        if ([annotation.layer isKindOfClass:[RMMarker class]] && ! annotation.isUserLocationAnnotation)
-                            annotation.layer.transform = _annotationTransform;
-
-                        if (![_visibleAnnotations containsObject:annotation])
-                        {
-                            if (!lastLayer)
-                                [_overlayView insertSublayer:annotation.layer atIndex:0];
-                            else
-                                [_overlayView insertSublayer:annotation.layer above:lastLayer];
-
-                            [_visibleAnnotations addObject:annotation];
-                        }
-
-                        lastLayer = annotation.layer;
-                    }
-                    else
-                    {
-                        if ( ! annotation.isUserLocationAnnotation)
-                        {
-                            if (_delegateHasWillHideLayerForAnnotation)
-                                [_delegate mapView:self willHideLayerForAnnotation:annotation];
-
-                            annotation.layer = nil;
-                            [_visibleAnnotations removeObject:annotation];
-
-                            if (_delegateHasDidHideLayerForAnnotation)
-                                [_delegate mapView:self didHideLayerForAnnotation:annotation];
-                        }
-                    }
-                }
-//                RMLog(@"%d annotations on screen, %d total", [overlayView sublayersCount], [annotations count]);
-            }
-            else
-            {
-                for (RMAnnotation *annotation in _visibleAnnotations)
-                    [self correctScreenPosition:annotation animated:animated];
-
-//                RMLog(@"%d annotations corrected", [visibleAnnotations count]);
-            }
-        }
-    }
-
-    [self correctOrderingOfAllAnnotations];
-
-    [CATransaction commit];
+  }
+  
+  [self correctOrderingOfAllAnnotations];
+  
+  [CATransaction commit];
 }
 
 - (void)correctPositionOfAllAnnotations
